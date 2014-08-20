@@ -1,0 +1,7 @@
+To: {{ .NewMemberEmail }}
+From: {{ .FromEmail }}
+Subject: Now is the time
+
+Hi {{ .NewMemberName }},
+
+for all good women to come to the aid of the party.
