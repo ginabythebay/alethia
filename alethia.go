@@ -3,10 +3,8 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/tls"
 	"flag"
 	"github.com/jordan-wright/email"
-	"github.com/mxk/go-imap/imap"
 	"io"
 	"log"
 	"net/smtp"
@@ -103,22 +101,37 @@ func combine(record map[string]string, nv namedValue) map[string]string {
 }
 
 func main() {
-	smtpServer := flag.String("smtpServer", "", "name (or ip) of smtp server")
+	// smtp flags
+	smtpServer := flag.String("smtpServer", "", "name (or ip) of smtp server (host:port)")
 	smtpUser := flag.String("smtpUser", "", "user for smtp log in")
 	smtpPassword := flag.String("smtpPassword", "", "password for smtp log in")
 
-	imapServer := flag.String("imapServer", "", "name (or ip) of imap server")
-	imapUser := flag.String("imapUser", "", "user for imap log in")
-	imapPassword := flag.String("imapPassword", "", "password for imap log in")
+	// imap flags
+	skipImap := flag.Bool("skipImap", false, "If set, disables saving to imap")
+	imapServer := flag.String("imapServer", "", "name (or ip) of imap server.  May be left blank if same as host of smtpServer.")
+	imapUser := flag.String("imapUser", "", "user for imap log in.  May be left blank if same as smtpUse.r")
+	imapPassword := flag.String("imapPassword", "", "password for imap log in.  May be left blank if same as smtpPassword.")
 	imapSent := flag.String("imapSent", "INBOX.Sent", "Folder on imap server for sent mail")
+	insecureSkipVerify := flag.Bool("insecureSkipVerify", false, "If set, disables imap checking of hosts certificate chain and host name (needed with some dreamhost servers because they use a single certificate for all mail hosts")
+
+	// message input flags
 	templateFile := flag.String("templateFile", "", "Name of file containing template")
 	tabularFileName := flag.String("tabularFile", "", "Name of tsv or csv file (one row per email)")
-	insecureSkipVerify := flag.Bool("insecureSkipVerify", false, "If set, disables checking of hosts certificate chain and host name (needed with some dreamhost servers because they use a single certificate for all mail hosts")
 	flag.Var(namedValueFlag, "nv", "key=value pair that will be used in template.  This flag may be specified multiple times")
 
 	flag.Parse()
 
 	smtpHost, smtpPort := parseSmtpServer(*smtpServer)
+
+	if len(*imapServer) == 0 {
+		imapServer = &smtpHost
+	}
+	if len(*imapUser) == 0 {
+		imapUser = smtpUser
+	}
+	if len(*imapPassword) == 0 {
+		imapPassword = smtpPassword
+	}
 
 	headersTemplate, bodyTemplate, err := readTemplate(*templateFile)
 	if err != nil {
@@ -136,41 +149,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	logger.Printf("imapServer %#v\n", *imapServer)
-
-	c, err := imap.Dial(*imapServer)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Remember to log out and close the connection when finished
-	defer c.Logout(30 * time.Second)
-
-	// Print server greeting (first response in the unilateral server data queue)
-	logger.Printf("Server says hello: %v, %v", c.Data[0].Info, c.Caps)
-	c.Data = nil
-
-	// Enable encryption, if supported by the server
-	if c.Caps["STARTTLS"] {
-		logger.Println("Starting TLS")
-		Config := tls.Config{InsecureSkipVerify: *insecureSkipVerify}
-		if _, err := c.StartTLS(&Config); err != nil {
+	var c *Client = nil
+	if !*skipImap {
+		c, err = Dial(*imapServer, *insecureSkipVerify, *imapUser, *imapPassword, *imapSent)
+		if err != nil {
 			log.Fatal(err)
 		}
-	}
 
-	// Authenticate
-	if c.State() == imap.Login {
-		logger.Println("logging in")
-		if _, err := c.Login(*imapUser, *imapPassword); err != nil {
-			log.Fatal(err)
-		}
+		defer c.Logout(30 * time.Second)
 	}
-
-	if _, err := c.Select(*imapSent, false); err != nil {
-		log.Fatal(err)
-	}
-	logger.Print("\nMailbox status:\n", c.Mailbox)
 
 Loop:
 	for {
@@ -244,16 +231,14 @@ Loop:
 			break Loop
 		}
 
-		// next step: make a valid message!
-		b, err := e.Bytes()
-		if err != nil {
-			log.Fatal(err)
+		// Save sent message to imap folder
+		if c != nil {
+			b, err := e.Bytes()
+			if err != nil {
+				log.Fatal(err)
+			}
+			c.Save(b)
 		}
-		literal := imap.NewLiteral(b)
-		if _, err := imap.Wait(c.Append(*imapSent, imap.NewFlagSet("\\Seen"), nil, literal)); err != nil {
-			log.Print(err)
-		}
-		log.Print("saved test message")
 	}
 
 }
