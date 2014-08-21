@@ -4,10 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"flag"
-	"github.com/jordan-wright/email"
 	"io"
 	"log"
-	"net/smtp"
 	"net/textproto"
 	"os"
 	"strings"
@@ -159,6 +157,8 @@ func main() {
 		defer c.Logout(30 * time.Second)
 	}
 
+	sender := NewSender(smtpHost, smtpPort, *smtpUser, *smtpPassword)
+
 Loop:
 	for {
 		record, err := tabularReader.Read()
@@ -194,35 +194,9 @@ Loop:
 			break Loop
 		}
 
-		e := email.NewEmail()
-		if s, ok := mimeHeader["To"]; ok {
-			e.To = s
-		}
-		if s, ok := mimeHeader["Cc"]; ok {
-			e.Cc = s
-		}
-		if s, ok := mimeHeader["Bcc"]; ok {
-			e.Bcc = s
-		}
-		if s := mimeHeader.Get("From"); len(s) != 0 {
-			e.From = s
-		}
-		e.Headers = mimeHeader
-		e.Text = []byte(bodyText)
-		emailBytes, err := e.Bytes()
-		if err != nil {
-			// maybe I need to keep track of whether there were any
-			// errors and at the end if there were, decline to
-			// actually send anything (unless a force flag was set).
-			logger.Print(err)
-			break Loop
-		}
-		logger.Printf("[%v]", string(emailBytes))
+		e := sender.NewEmail(mimeHeader, bodyText)
 
-		auth := smtp.PlainAuth("", *smtpUser, *smtpPassword, smtpHost)
-
-		tokens := []string{smtpHost, smtpPort}
-		err = e.Send(strings.Join(tokens, ":"), auth)
+		err = e.Send()
 		if err != nil {
 			// maybe I need to keep track of whether there were any
 			// errors and at the end if there were, decline to
