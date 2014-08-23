@@ -98,6 +98,83 @@ func combine(record map[string]string, nv namedValue) map[string]string {
 	return res
 }
 
+type Context struct {
+	tabularFileName string
+	imapClient      *Client
+	headers         *template.Template
+	body            *template.Template
+	sender          *Sender
+}
+
+func (c *Context) newEmail(templateValues interface{}) (*OurEmail, error) {
+	headerText, err := executeTemplate(c.headers, templateValues)
+	if err != nil {
+		return nil, err
+	}
+	rr := textproto.NewReader(bufio.NewReader(strings.NewReader(headerText)))
+	mimeHeader, err := rr.ReadMIMEHeader()
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+
+	bodyText, err := executeTemplate(c.body, templateValues)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.sender.NewEmail(mimeHeader, bodyText), nil
+}
+
+func (c *Context) process() (processedCount int, rowErrorCount int, fatal error) {
+	tabularFile, err := os.Open(c.tabularFileName)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tabularFile.Close()
+
+	tabularReader, err := NewTabularReader(tabularFile)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	processedCount = 0
+	rowErrorCount = 0
+
+	for {
+		record, err := tabularReader.Read()
+		switch {
+		case err == io.EOF:
+			return processedCount, rowErrorCount, nil
+		case err != nil:
+			return processedCount, rowErrorCount, err
+		}
+		templateValues := combine(record, namedValueFlag)
+
+		e, err := c.newEmail(templateValues)
+		if err != nil {
+			logger.Print(err)
+			rowErrorCount += 1
+		}
+
+		err = e.Send()
+		if err != nil {
+			logger.Print(err)
+			rowErrorCount += 1
+		}
+
+		// Save sent message to imap folder
+		if c.imapClient != nil {
+			b, err := e.Bytes()
+			if err != nil {
+				return processedCount, rowErrorCount, err
+			}
+			c.imapClient.Save(b)
+		}
+
+		processedCount += 1
+	}
+}
+
 func main() {
 	// smtp flags
 	smtpServer := flag.String("smtpServer", "", "name (or ip) of smtp server (host:port)")
@@ -136,83 +213,29 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tabularFile, err := os.Open(*tabularFileName)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer tabularFile.Close()
-
-	tabularReader, err := NewTabularReader(tabularFile)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var c *Client = nil
+	var imapClient *Client = nil
 	if !*skipImap {
-		c, err = Dial(*imapServer, *insecureSkipVerify, *imapUser, *imapPassword, *imapSent)
+		imapClient, err = Dial(*imapServer, *insecureSkipVerify, *imapUser, *imapPassword, *imapSent)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		defer c.Logout(30 * time.Second)
+		defer imapClient.Logout(30 * time.Second)
 	}
 
 	sender := NewSender(smtpHost, smtpPort, *smtpUser, *smtpPassword)
 
-Loop:
-	for {
-		record, err := tabularReader.Read()
-		switch {
-		case err == io.EOF:
-			break Loop
-		case err != nil:
-			logger.Print(err)
-			break Loop
-		}
-		templateValues := combine(record, namedValueFlag)
+	context := Context{*tabularFileName, imapClient, headersTemplate, bodyTemplate, sender}
 
-		headerText, err := executeTemplate(headersTemplate, templateValues)
-		if err != nil {
-			// maybe I need to keep track of whether there were any
-			// errors and at the end if there were, decline to
-			// actually send anything (unless a force flag was set).
-			logger.Print(err)
-			break Loop
-		}
-		rr := textproto.NewReader(bufio.NewReader(strings.NewReader(headerText)))
-		mimeHeader, err := rr.ReadMIMEHeader()
-		if err != nil && err != io.EOF {
-			log.Fatal(err)
-		}
+	// need to learn the loop into a method on context, where we open
+	// up the reader, loop through records should return an error
+	// count, and a possible error can config it with verbosity,
+	// whether to actually send (typical flow will be dry run followed
+	// by real run)
 
-		bodyText, err := executeTemplate(bodyTemplate, templateValues)
-		if err != nil {
-			// maybe I need to keep track of whether there were any
-			// errors and at the end if there were, decline to
-			// actually send anything (unless a force flag was set).
-			logger.Print(err)
-			break Loop
-		}
-
-		e := sender.NewEmail(mimeHeader, bodyText)
-
-		err = e.Send()
-		if err != nil {
-			// maybe I need to keep track of whether there were any
-			// errors and at the end if there were, decline to
-			// actually send anything (unless a force flag was set).
-			logger.Print(err)
-			break Loop
-		}
-
-		// Save sent message to imap folder
-		if c != nil {
-			b, err := e.Bytes()
-			if err != nil {
-				log.Fatal(err)
-			}
-			c.Save(b)
-		}
+	processedCount, rowErrorCount, fatalError := context.process()
+	if fatalError != nil {
+		log.Fatal(fatalError)
 	}
-
+	log.Printf("Processed %v with %v successes and %v failures", context.tabularFileName, processedCount, rowErrorCount)
 }
