@@ -137,10 +137,15 @@ func (c *Context) process() (processedCount int, rowErrorCount int, fatal error)
 		return 0, 0, err
 	}
 
+	// TODO(gina) need to be more clear here about what processedCount
+	// represents.  In the code below, it more or less represents the
+	// rows we got through without a fatal error.  In the caller, we
+	// are treating it as a success count
 	processedCount = 0
 	rowErrorCount = 0
 
 	for {
+
 		record, err := tabularReader.Read()
 		switch {
 		case err == io.EOF:
@@ -154,21 +159,34 @@ func (c *Context) process() (processedCount int, rowErrorCount int, fatal error)
 		if err != nil {
 			logger.Print(err)
 			rowErrorCount += 1
+			continue
 		}
 
 		err = e.Send()
 		if err != nil {
 			logger.Print(err)
 			rowErrorCount += 1
+			continue
 		}
 
 		// Save sent message to imap folder
-		if c.imapClient != nil {
-			b, err := e.Bytes()
+		b, err := e.Bytes()
+		switch {
+		case err != nil && c.imapClient == nil:
+			rowErrorCount += 1
+			logger.Print(err)
+			continue
+		case err != nil && c.imapClient != nil:
+			rowErrorCount += 1
+			logger.Print(err)
+			return processedCount, rowErrorCount, err
+		default:
+			err = c.imapClient.Save(b)
 			if err != nil {
+				rowErrorCount += 1
+				logger.Print(err)
 				return processedCount, rowErrorCount, err
 			}
-			c.imapClient.Save(b)
 		}
 
 		processedCount += 1
@@ -187,7 +205,7 @@ func main() {
 	imapUser := flag.String("imapUser", "", "user for imap log in.  May be left blank if same as smtpUse.r")
 	imapPassword := flag.String("imapPassword", "", "password for imap log in.  May be left blank if same as smtpPassword.")
 	imapSent := flag.String("imapSent", "INBOX.Sent", "Folder on imap server for sent mail")
-	insecureSkipVerify := flag.Bool("insecureSkipVerify", false, "If set, disables imap checking of hosts certificate chain and host name (needed with some dreamhost servers because they use a single certificate for all mail hosts")
+	insecureSkipVerify := flag.Bool("insecureSkipVerify", false, "If set, disables smtp/imap checking of hosts certificate chain and host name (needed with some dreamhost servers because they use a single certificate for all mail hosts")
 
 	// message input flags
 	templateFile := flag.String("templateFile", "", "Name of file containing template")
@@ -223,7 +241,7 @@ func main() {
 		defer imapClient.Logout(30 * time.Second)
 	}
 
-	sender := NewSender(smtpHost, smtpPort, *smtpUser, *smtpPassword)
+	sender := NewSender(*insecureSkipVerify, smtpHost, smtpPort, *smtpUser, *smtpPassword)
 
 	context := Context{*tabularFileName, imapClient, headersTemplate, bodyTemplate, sender}
 

@@ -2,9 +2,10 @@ package main
 
 import (
 	"crypto/tls"
-	"github.com/mxk/go-imap/imap"
 	"log"
 	"time"
+
+	"github.com/mxk/go-imap/imap"
 )
 
 type Client struct {
@@ -25,8 +26,8 @@ func Dial(server string, insecureSkipVerify bool, user string, password string, 
 
 	// Enable encryption, if supported by the server
 	if client.Caps["STARTTLS"] {
-		Config := tls.Config{InsecureSkipVerify: insecureSkipVerify}
-		if _, err := client.StartTLS(&Config); err != nil {
+		config := tls.Config{InsecureSkipVerify: insecureSkipVerify}
+		if _, err := client.StartTLS(&config); err != nil {
 			client.Logout(0)
 			return nil, err
 		}
