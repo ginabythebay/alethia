@@ -180,6 +180,8 @@ func (c *Context) process() (processedCount int, rowErrorCount int, fatal error)
 			rowErrorCount += 1
 			logger.Print(err)
 			return processedCount, rowErrorCount, err
+		case err == nil && c.imapClient == nil:
+			break // nothing do to
 		default:
 			err = c.imapClient.Save(b)
 			if err != nil {
